@@ -1,0 +1,271 @@
+{
+  "actions": {
+    "build_device_chain": {
+      "description": "Build and configure a device chain on a target track",
+      "required": [
+        "steps"
+      ],
+      "properties": {
+        "target": {
+          "type": "object",
+          "optional": true,
+          "properties": {
+            "use_selected_track": {
+              "type": "boolean",
+              "optional": true
+            },
+            "track_index": {
+              "type": "integer",
+              "optional": true
+            },
+            "track_name": {
+              "type": "string",
+              "optional": true
+            }
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "device_name"
+            ],
+            "constraints": {
+              "forbid_together": [
+                [
+                  "position",
+                  "insert_index"
+                ]
+              ]
+            },
+            "properties": {
+              "device_name": {
+                "type": "string"
+              },
+              "device_class": {
+                "type": "string",
+                "optional": true
+              },
+              "position": {
+                "type": "object",
+                "optional": true,
+                "properties": {
+                  "placement": {
+                    "type": "string",
+                    "enum": [
+                      "before",
+                      "after"
+                    ]
+                  },
+                  "relative_device_name": {
+                    "type": "string",
+                    "optional": true
+                  },
+                  "relative_device_index": {
+                    "type": "integer",
+                    "optional": true
+                  }
+                }
+              },
+              "insert_index": {
+                "type": "integer",
+                "optional": true
+              },
+              "parameter_updates": {
+                "type": "array",
+                "optional": true,
+                "items": {
+                  "type": "object",
+                  "constraints": {
+                    "require_exactly_one": [
+                      [
+                        "param_name",
+                        "param_index"
+                      ],
+                      [
+                        "value",
+                        "target_display_value",
+                        "target_display_text"
+                      ]
+                    ]
+                  },
+                  "properties": {
+                    "param_name": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "param_index": {
+                      "type": "integer",
+                      "optional": true
+                    },
+                    "value": {
+                      "type": "number",
+                      "optional": true
+                    },
+                    "target_display_value": {
+                      "type": "number",
+                      "optional": true
+                    },
+                    "target_display_text": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "target_unit": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "fallback_value": {
+                      "type": "number",
+                      "optional": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "route": "api",
+      "destructive": false
+    },
+    "update_device_parameters": {
+      "description": "Update parameters on existing devices on a target track",
+      "required": [
+        "updates"
+      ],
+      "properties": {
+        "target": {
+          "type": "object",
+          "optional": true,
+          "properties": {
+            "use_selected_track": {
+              "type": "boolean",
+              "optional": true
+            },
+            "track_index": {
+              "type": "integer",
+              "optional": true
+            },
+            "track_name": {
+              "type": "string",
+              "optional": true
+            }
+          }
+        },
+        "updates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "parameter_updates"
+            ],
+            "constraints": {
+              "require_exactly_one": [
+                [
+                  "device_name",
+                  "device_index"
+                ]
+              ]
+            },
+            "properties": {
+              "device_name": {
+                "type": "string",
+                "optional": true
+              },
+              "device_index": {
+                "type": "integer",
+                "optional": true
+              },
+              "device_occurrence": {
+                "type": "integer",
+                "optional": true
+              },
+              "parameter_updates": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "constraints": {
+                    "require_exactly_one": [
+                      [
+                        "param_name",
+                        "param_index"
+                      ],
+                      [
+                        "value",
+                        "target_display_value",
+                        "target_display_text"
+                      ]
+                    ]
+                  },
+                  "properties": {
+                    "param_name": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "param_index": {
+                      "type": "integer",
+                      "optional": true
+                    },
+                    "value": {
+                      "type": "number",
+                      "optional": true
+                    },
+                    "target_display_value": {
+                      "type": "number",
+                      "optional": true
+                    },
+                    "target_display_text": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "target_unit": {
+                      "type": "string",
+                      "optional": true
+                    },
+                    "fallback_value": {
+                      "type": "number",
+                      "optional": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "route": "api",
+      "destructive": false
+    },
+    "inspect_track_chain": {
+      "description": "Inspect devices on a target track",
+      "required": [],
+      "properties": {
+        "target": {
+          "type": "object",
+          "optional": true,
+          "properties": {
+            "use_selected_track": {
+              "type": "boolean",
+              "optional": true
+            },
+            "track_index": {
+              "type": "integer",
+              "optional": true
+            },
+            "track_name": {
+              "type": "string",
+              "optional": true
+            }
+          }
+        },
+        "include_parameters": {
+          "type": "boolean",
+          "optional": true
+        }
+      },
+      "route": "api",
+      "destructive": false
+    }
+  }
+}
