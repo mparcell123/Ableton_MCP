@@ -1,0 +1,1 @@
+"""Ableton Chain MCP package."""

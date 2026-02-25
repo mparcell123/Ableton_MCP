@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ableton-chain-mcp"
+version = "1.0.0"
+description = "Chain-only bridge-backed MCP harness for Ableton Live"
+requires-python = ">=3.12"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Ableton MCP"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.11.0",
+  "mypy>=1.11.0",
+]
+
+[project.scripts]
+ableton-mcp-server = "ableton_chain_mcp.mcp_server.main:main"
+ableton-bridge = "ableton_chain_mcp.bridge.main:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["ableton_chain_mcp*"]
