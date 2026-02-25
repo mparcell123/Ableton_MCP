@@ -54,7 +54,7 @@ class TestLlmChainHarness(unittest.TestCase):
         self.assertEqual(updates[1]["param_index"], 2)
         self.assertEqual(updates[1]["target_display_text"], "high pass")
 
-    def test_run_turn_blocks_parameter_mutation_before_inspect(self) -> None:
+    def test_run_turn_allows_parameter_mutation_without_prior_inspect(self) -> None:
         responses: List[Dict[str, Any]] = [
             {
                 "message": {
@@ -78,18 +78,21 @@ class TestLlmChainHarness(unittest.TestCase):
             {"message": {"content": "done"}},
         ]
 
+        executed: List[str] = []
+
         def fake_post_ollama_chat(**_: Any) -> Dict[str, Any]:
             return responses.pop(0)
 
-        def should_not_execute(**_: Any) -> Dict[str, Any]:
-            raise AssertionError("mutation should be blocked by PRECONDITION")
+        def fake_execute_tool_call(**kwargs: Any) -> Dict[str, Any]:
+            executed.append(kwargs["tool_name"])
+            return {"ok": True, "message": "ok"}
 
         original_post = self.harness._post_ollama_chat
         original_execute = self.harness._execute_tool_call
         self.harness._post_ollama_chat = fake_post_ollama_chat
-        self.harness._execute_tool_call = should_not_execute
+        self.harness._execute_tool_call = fake_execute_tool_call
         try:
-            history = self.harness._run_turn(
+            _ = self.harness._run_turn(
                 server=object(),
                 model="model",
                 ollama_url="http://127.0.0.1:11434",
@@ -115,15 +118,7 @@ class TestLlmChainHarness(unittest.TestCase):
             self.harness._post_ollama_chat = original_post
             self.harness._execute_tool_call = original_execute
 
-        precondition_errors = []
-        for msg in history:
-            if msg.get("role") != "tool":
-                continue
-            payload = json.loads(msg.get("content") or "{}")
-            if payload.get("error_code") == "PRECONDITION":
-                precondition_errors.append(payload)
-
-        self.assertTrue(precondition_errors)
+        self.assertEqual(executed, ["action.build_device_chain"])
 
     def test_run_turn_allows_parameter_mutation_after_successful_inspect(self) -> None:
         responses: List[Dict[str, Any]] = [
@@ -264,34 +259,8 @@ class TestLlmChainHarness(unittest.TestCase):
 
         self.assertTrue(invalid_errors)
 
-    def test_run_turn_completes_precondition_inspect_mutate_summary_with_higher_round_limit(self) -> None:
+    def test_run_turn_completes_mutate_summary_with_higher_round_limit(self) -> None:
         responses: List[Dict[str, Any]] = [
-            {
-                "message": {
-                    "tool_calls": [
-                        {
-                            "function": {
-                                "name": "action.build_device_chain",
-                                "arguments": {
-                                    "steps": [
-                                        {
-                                            "device_name": "EQ Eight",
-                                            "parameter_updates": [{"param_name": "1 Gain A", "value": 0.3}],
-                                        }
-                                    ]
-                                },
-                            }
-                        }
-                    ]
-                }
-            },
-            {
-                "message": {
-                    "tool_calls": [
-                        {"function": {"name": "action.inspect_track_chain", "arguments": {"include_parameters": True}}}
-                    ]
-                }
-            },
             {
                 "message": {
                     "tool_calls": [
@@ -336,11 +305,6 @@ class TestLlmChainHarness(unittest.TestCase):
                 timeout_sec=5.0,
                 tool_defs=[],
                 tool_input_schemas={
-                    "action.inspect_track_chain": {
-                        "type": "object",
-                        "properties": {"include_parameters": {"type": "boolean"}},
-                        "additionalProperties": False,
-                    },
                     "action.build_device_chain": {
                         "type": "object",
                         "properties": {"steps": {"type": "array"}},
@@ -358,7 +322,7 @@ class TestLlmChainHarness(unittest.TestCase):
             self.harness._post_ollama_chat = original_post
             self.harness._execute_tool_call = original_execute
 
-        self.assertEqual(executed, ["action.inspect_track_chain", "action.build_device_chain"])
+        self.assertEqual(executed, ["action.build_device_chain"])
         assistant_contents = [msg.get("content") for msg in history if msg.get("role") == "assistant"]
         self.assertIn("Chain built successfully.", assistant_contents)
 

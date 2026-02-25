@@ -106,7 +106,7 @@ Notes:
 - Harness validates model tool calls against MCP tool schema before execution.
 - Harness canonicalizes common parameter aliases (for example `parameter`, `name`, `id`) to strict schema keys.
 - EQ Eight supports common natural aliases (for example `Low Shelf Gain`) and maps them to canonical parameter names.
-- Harness enforces inspect-first for parameter-changing calls in each turn.
+- Harness biases toward intent-first chain building; inspection is used only when context or verification is needed.
 - MCP remains client-agnostic and can be used from any LLM/agent client.
 
 ## Example `action.build_device_chain` Payload

@@ -6,6 +6,8 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .parameter_resolver import ResolutionTrace, normalize_query, resolve_parameter
+
 
 class ChainTools:
     """Deterministic chain builder/inspector surface for Ableton Live."""
@@ -23,7 +25,7 @@ class ChainTools:
         "delay": "Delay",
     }
 
-    _EQ8_PARAMETER_ALIASES: Dict[str, Tuple[str, ...]] = {
+    _CURATED_PARAMETER_ALIASES: Dict[str, Tuple[str, ...]] = {
         "1type": ("1 Filter Type A", "1 Filter Type", "1 Mode A", "1 Mode"),
         "1filtertype": ("1 Filter Type A", "1 Filter Type", "1 Mode A", "1 Mode"),
         "band1type": ("1 Filter Type A", "1 Filter Type", "1 Mode A", "1 Mode"),
@@ -47,6 +49,7 @@ class ChainTools:
     }
 
     _TOKEN_RE = re.compile(r"[a-z0-9]+")
+    _EQ_BAND_QUERY_RE = re.compile(r"^(?:band)?([1-8])(?:filter)?(type|frequency|freq|gain|q)$")
 
     def __init__(self, song: Any, c_instance: Any) -> None:
         self.song = song
@@ -109,6 +112,7 @@ class ChainTools:
                 "position_message": inserted.get("position_message"),
                 "parameters_applied": [],
                 "unmatched_parameters": [],
+                "unmatched_parameter_details": [],
             }
 
             apply_result = self._apply_parameter_updates(device, step.get("parameter_updates"))
@@ -122,6 +126,9 @@ class ChainTools:
 
             device_result["parameters_applied"] = list(apply_result.get("parameters_applied") or [])
             device_result["unmatched_parameters"] = list(apply_result.get("unmatched_parameters") or [])
+            device_result["unmatched_parameter_details"] = list(
+                apply_result.get("unmatched_parameter_details") or []
+            )
             warnings.extend(str(w) for w in (apply_result.get("warnings") or []))
 
             results.append(device_result)
@@ -175,6 +182,7 @@ class ChainTools:
                 "device_index": int(device_index),
                 "parameters_applied": [],
                 "unmatched_parameters": [],
+                "unmatched_parameter_details": [],
             }
 
             apply_result = self._apply_parameter_updates(device, item.get("parameter_updates"))
@@ -188,6 +196,9 @@ class ChainTools:
 
             item_result["parameters_applied"] = list(apply_result.get("parameters_applied") or [])
             item_result["unmatched_parameters"] = list(apply_result.get("unmatched_parameters") or [])
+            item_result["unmatched_parameter_details"] = list(
+                apply_result.get("unmatched_parameter_details") or []
+            )
             warnings.extend(str(w) for w in (apply_result.get("warnings") or []))
 
             results.append(item_result)
@@ -522,20 +533,39 @@ class ChainTools:
 
         applied = []
         unmatched = []
+        unmatched_details = []
         warnings = []
 
         for update in parameter_updates:
             if not isinstance(update, dict):
                 unmatched.append("invalid update payload")
+                unmatched_details.append(
+                    {
+                        "query": "invalid update payload",
+                        "normalized_query": "",
+                        "candidate_chain": [],
+                        "reason": "invalid_query",
+                    }
+                )
                 continue
 
-            target_param = self._resolve_parameter(device, update)
+            target_param, resolution = self._resolve_parameter(device, update)
             if target_param is None:
                 hint = update.get("param_name")
                 if hint is None and update.get("param_index") is not None:
                     hint = "index:{}".format(update.get("param_index"))
                 unmatched.append(str(hint or "unknown"))
+                unmatched_details.append(
+                    {
+                        "query": resolution.query,
+                        "normalized_query": resolution.normalized_query,
+                        "candidate_chain": list(resolution.candidate_chain),
+                        "reason": self._resolution_reason(resolution),
+                    }
+                )
                 continue
+
+            self._ensure_eq8_band_enabled(device, resolution)
 
             if "target_display_text" in update:
                 apply_res = self._set_parameter_by_display_text(
@@ -554,6 +584,14 @@ class ChainTools:
                 apply_res = self._set_parameter_absolute(target_param, update.get("value"))
             else:
                 unmatched.append(str(update.get("param_name") or "unknown"))
+                unmatched_details.append(
+                    {
+                        "query": resolution.query,
+                        "normalized_query": resolution.normalized_query,
+                        "candidate_chain": list(resolution.candidate_chain),
+                        "reason": "invalid_query",
+                    }
+                )
                 continue
 
             if not apply_res.get("ok"):
@@ -568,6 +606,13 @@ class ChainTools:
                     "display_value": apply_res.get("display"),
                     "mode": apply_res.get("mode"),
                     "exact_match": apply_res.get("exact_match"),
+                    "resolution": {
+                        "matched_by": resolution.matched_by,
+                        "query": resolution.query,
+                        "normalized_query": resolution.normalized_query,
+                        "resolved_param_name": resolution.resolved_param_name,
+                        "candidate_chain": list(resolution.candidate_chain),
+                    },
                 }
             )
 
@@ -575,89 +620,106 @@ class ChainTools:
             "ok": True,
             "parameters_applied": applied,
             "unmatched_parameters": unmatched,
+            "unmatched_parameter_details": unmatched_details,
             "warnings": warnings,
         }
 
-    def _resolve_parameter(self, device: Any, update: Dict[str, Any]) -> Any:
+    def _resolve_parameter(self, device: Any, update: Dict[str, Any]) -> Tuple[Any, ResolutionTrace]:
         parameters = list(getattr(device, "parameters", []) or [])
         if not parameters:
-            return None
+            return None, ResolutionTrace(
+                matched_by=None,
+                query=str(update.get("param_name") or ""),
+                normalized_query=normalize_query(update.get("param_name")),
+                candidate_chain=[],
+                resolved_param_name=None,
+            )
 
         param_index = update.get("param_index")
         if param_index is not None:
             try:
                 idx = int(param_index)
                 if 0 <= idx < len(parameters):
-                    return parameters[idx]
+                    param = parameters[idx]
+                    query_text = "index:{}".format(idx)
+                    return param, ResolutionTrace(
+                        matched_by="exact",
+                        query=query_text,
+                        normalized_query=normalize_query(query_text),
+                        candidate_chain=[query_text, str(getattr(param, "name", ""))],
+                        resolved_param_name=str(getattr(param, "name", "")),
+                    )
             except Exception:
-                return None
+                return None, ResolutionTrace(
+                    matched_by=None,
+                    query="index:{}".format(param_index),
+                    normalized_query=normalize_query("index:{}".format(param_index)),
+                    candidate_chain=[],
+                    resolved_param_name=None,
+                )
+            return None, ResolutionTrace(
+                matched_by=None,
+                query="index:{}".format(param_index),
+                normalized_query=normalize_query("index:{}".format(param_index)),
+                candidate_chain=[],
+                resolved_param_name=None,
+            )
 
-        for query in self._parameter_query_candidates(device, update.get("param_name")):
-            matched = self._match_parameter_by_name(parameters, query)
-            if matched is not None:
-                return matched
-        return None
+        return resolve_parameter(
+            parameters=parameters,
+            device=device,
+            query=update.get("param_name"),
+            curated_aliases=self._CURATED_PARAMETER_ALIASES,
+        )
 
-    def _parameter_query_candidates(self, device: Any, query: Any) -> List[str]:
-        if query is None:
-            return []
-
-        query_text = str(query)
-        query_norm = self._normalize_name(query_text)
-
-        candidates: List[str] = []
-        if self._is_eq8_device(device):
-            candidates.extend(list(self._EQ8_PARAMETER_ALIASES.get(query_norm, ())))
-        candidates.append(query_text)
-
-        deduped: List[str] = []
-        seen = set()
-        for item in candidates:
-            key = self._normalize_name(item)
-            if not key:
-                key = str(item).strip().lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(item)
-        return deduped
+    def _resolution_reason(self, resolution: ResolutionTrace) -> str:
+        if not resolution.normalized_query:
+            return "invalid_query"
+        return "no_match"
 
     def _is_eq8_device(self, device: Any) -> bool:
         device_name = self._normalize_name(getattr(device, "name", ""))
         device_class = self._normalize_name(getattr(device, "class_name", ""))
         return device_name == "eqeight" or device_class in {"eq8", "eqeight"}
 
-    def _match_parameter_by_name(self, parameters: Sequence[Any], query: Any) -> Any:
-        if query is None:
-            return None
-        query_norm = self._normalize_name(str(query))
-        if not query_norm:
-            return None
-
-        best = None
-        best_score = 0.0
-        query_tokens = set(self._TOKEN_RE.findall(query_norm))
-
-        for param in parameters:
-            pname = str(getattr(param, "name", ""))
-            pnorm = self._normalize_name(pname)
-            if not pnorm:
+    def _ensure_eq8_band_enabled(self, device: Any, resolution: ResolutionTrace) -> None:
+        if not self._is_eq8_device(device):
+            return
+        match = self._EQ_BAND_QUERY_RE.match(resolution.normalized_query)
+        if not match:
+            return
+        band = match.group(1)
+        toggle_fragments = ("on", "active", "enabled", "enable")
+        for param in list(getattr(device, "parameters", []) or []):
+            raw_name = str(getattr(param, "name", ""))
+            pname = self._normalize_name(raw_name)
+            tokens = set(self._TOKEN_RE.findall(raw_name.lower()))
+            references_band = (
+                band in tokens
+                or "{}on".format(band) in pname
+                or "{}active".format(band) in pname
+                or "{}enabled".format(band) in pname
+                or "band{}".format(band) in pname
+            )
+            if not references_band:
                 continue
-            if query_norm == pnorm:
-                return param
-
-            score = 0.0
-            if query_norm in pnorm or pnorm in query_norm:
-                score += 2.0
-
-            p_tokens = set(self._TOKEN_RE.findall(pnorm))
-            score += float(len(query_tokens & p_tokens))
-
-            if score > best_score:
-                best = param
-                best_score = score
-
-        return best
+            has_toggle_signal = any(fragment in pname for fragment in toggle_fragments) or any(
+                fragment in tokens for fragment in toggle_fragments
+            )
+            if not has_toggle_signal:
+                continue
+            current = self._safe_float(getattr(param, "value", None))
+            if current is not None and current >= 0.5:
+                return
+            p_max = getattr(param, "max", None)
+            on_value = 1.0
+            if p_max is not None:
+                try:
+                    on_value = float(p_max)
+                except Exception:
+                    on_value = 1.0
+            _ = self._set_parameter_absolute(param, on_value)
+            return
 
     def _set_parameter_absolute(self, param: Any, value: Any) -> Dict[str, Any]:
         try:
@@ -702,13 +764,15 @@ class ChainTools:
         p_min = float(getattr(param, "min", 0.0) or 0.0)
         p_max = float(getattr(param, "max", 1.0) or 1.0)
         steps = int(max(1, (p_max - p_min) + 1))
+        direct_mode = self._supports_direct_str_for_value(param, p_min, p_max)
+        original_value = getattr(param, "value", None)
 
         best_val = None
         best_score = 0.0
         best_exact = False
         for i in range(steps):
             candidate = p_min + i
-            display = self._safe_str_for_value(param, candidate)
+            display = self._display_for_backend_value(param, candidate, direct_mode)
             score, exact = self._score_display_text_match(target_norm, self._normalize_display_text(display))
             if score > best_score:
                 best_score = score
@@ -743,6 +807,11 @@ class ChainTools:
                 "exact_match": False,
             }
 
+        if original_value is not None and not direct_mode:
+            try:
+                param.value = original_value
+            except Exception:
+                pass
         return {"ok": False, "error": "target_display_text did not match any quantized value"}
 
     def _set_parameter_with_verify(
@@ -763,9 +832,10 @@ class ChainTools:
         unit = self._normalize_unit_hint(target_unit)
         p_min = float(getattr(param, "min", 0.0) or 0.0)
         p_max = float(getattr(param, "max", 1.0) or 1.0)
+        direct_mode = self._supports_direct_str_for_value(param, p_min, p_max)
 
         def read_display(backend: float) -> Tuple[str, Optional[float]]:
-            display = self._safe_str_for_value(param, backend)
+            display = self._display_for_backend_value(param, backend, direct_mode)
             parsed = self._parse_display_number(display)
             converted = self._convert_display_number_for_unit(parsed, display, unit)
             return display, converted
@@ -859,6 +929,30 @@ class ChainTools:
             "display": display,
             "exact_match": bool(exact) and not used_fallback,
         }
+
+    def _supports_direct_str_for_value(self, param: Any, sample_a: float, sample_b: float) -> bool:
+        if not hasattr(param, "str_for_value"):
+            return False
+        try:
+            display_a = str(param.str_for_value(float(sample_a)))
+            display_b = str(param.str_for_value(float(sample_b)))
+        except Exception:
+            return False
+        parsed_a = self._parse_display_number(display_a)
+        parsed_b = self._parse_display_number(display_b)
+        if parsed_a is None or parsed_b is None:
+            return False
+        return abs(parsed_a - parsed_b) > 0.001
+
+    def _display_for_backend_value(self, param: Any, backend_value: float, direct_mode: bool) -> str:
+        if direct_mode:
+            return str(self._safe_str_for_value(param, backend_value) or "")
+        try:
+            param.value = float(backend_value)
+        except Exception:
+            return str(self._safe_str_for_value(param, getattr(param, "value", backend_value)) or "")
+        current = self._safe_float(getattr(param, "value", backend_value))
+        return str(self._safe_str_for_value(param, current) or "")
 
     def _normalize_display_text(self, value: Any) -> str:
         return " ".join(self._TOKEN_RE.findall(str(value or "").lower()))
@@ -1040,6 +1134,11 @@ class ChainTools:
                 return float(number)
             if -1.0 <= float(number) <= 1.0:
                 return float(number) * 100.0
+            return float(number)
+
+        if unit_hint == "hz":
+            if "khz" in display or "k hz" in display:
+                return float(number) * 1000.0
             return float(number)
 
         return float(number)

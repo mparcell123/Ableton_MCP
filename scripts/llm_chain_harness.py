@@ -29,7 +29,9 @@ from ableton_chain_mcp.mcp_server.server import MCPServer
 SYSTEM_PROMPT = (
     "You are an Ableton Live chain assistant. "
     "Use the provided MCP tools: action.inspect_track_chain, action.build_device_chain, and action.update_device_parameters. "
-    "When parameter changes are needed, call action.inspect_track_chain first in the same turn, then call a mutating tool. "
+    "For end-state requests (for example: make a hat less harsh, warmer, brighter, tighter), plan and apply one or more effect devices first using action.build_device_chain with parameter_updates. "
+    "Use action.update_device_parameters when the user clearly wants to modify existing devices. "
+    "Use action.inspect_track_chain only when needed to disambiguate track/device context or verify/follow up after changes. "
     "Use canonical parameter update keys only: param_name or param_index; and exactly one of value, target_display_value, or target_display_text. "
     "Example update item: {\"param_name\":\"1 Frequency A\", \"target_display_value\":100.0, \"target_unit\":\"hz\"}. "
     "Example text update item: {\"param_name\":\"Filter Type\", \"target_display_text\":\"high pass\"}. "
@@ -464,34 +466,6 @@ def _normalize_tool_arguments(tool_name: str, arguments: Dict[str, Any]) -> Tupl
     return normalized, changed
 
 
-def _has_parameter_updates(tool_name: str, arguments: Dict[str, Any]) -> bool:
-    if tool_name == "action.build_device_chain":
-        steps = arguments.get("steps")
-        if not isinstance(steps, list):
-            return False
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            updates = step.get("parameter_updates")
-            if isinstance(updates, list) and bool(updates):
-                return True
-        return False
-
-    if tool_name == "action.update_device_parameters":
-        items = arguments.get("updates")
-        if not isinstance(items, list):
-            return False
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            updates = item.get("parameter_updates")
-            if isinstance(updates, list) and bool(updates):
-                return True
-        return False
-
-    return False
-
-
 def _type_matches(value: Any, expected: str) -> bool:
     if expected == "object":
         return isinstance(value, dict)
@@ -564,7 +538,7 @@ def _wait_for_bridge_ready(server: MCPServer, timeout_sec: float) -> Tuple[bool,
         if health.get("ok"):
             return True, health
         if time.time() >= deadline:
-            return False, health
+            return False, last
         time.sleep(1.0)
 
 
@@ -609,7 +583,6 @@ def _run_turn(
 ) -> List[Dict[str, Any]]:
     history = list(messages)
     history.append({"role": "user", "content": user_prompt})
-    inspected_this_turn = False
     round_limit = max(3, int(max_tool_rounds))
 
     for _ in range(round_limit):
@@ -676,21 +649,6 @@ def _run_turn(
             if normalized:
                 print("\nAdjusted tool args to schema-compliant canonical payload.")
 
-            if (
-                tool_name in _MUTATING_ACTIONS
-                and _has_parameter_updates(tool_name, arguments)
-                and not inspected_this_turn
-            ):
-                err = {
-                    "ok": False,
-                    "error_code": "PRECONDITION",
-                    "message": "Call action.inspect_track_chain first in this turn before parameter updates.",
-                }
-                print("\nTool error:")
-                print(_render_json(err))
-                history.append({"role": "tool", "tool_name": tool_name, "content": _render_json(err)})
-                continue
-
             schema = tool_input_schemas.get(tool_name) or {"type": "object"}
             schema_error = _validate_against_tool_schema(arguments, schema)
             if schema_error:
@@ -714,8 +672,6 @@ def _run_turn(
                 skip_result = {"ok": False, "error_code": "SKIPPED", "message": "User skipped execution"}
                 history.append({"role": "tool", "tool_name": tool_name, "content": _render_json(skip_result)})
             else:
-                if tool_name == "action.inspect_track_chain" and result.get("ok"):
-                    inspected_this_turn = True
                 history.append({"role": "tool", "tool_name": tool_name, "content": _render_json(result)})
 
     print(f"\nReached tool-call loop limit ({round_limit} rounds) for this turn.")

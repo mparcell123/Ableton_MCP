@@ -125,6 +125,9 @@ class TestChainTools(unittest.TestCase):
                     _Param("1 Frequency A", value=0.2, unit="hz"),
                     _Param("1 Gain A", value=0.5, unit="db"),
                     _Param("1 Filter Type A", value=0.0, p_min=0.0, p_max=3.0, is_quantized=True, unit="eq8_type"),
+                    _Param("8 Frequency A", value=0.6, unit="hz"),
+                    _Param("8 Gain A", value=0.4, unit="db"),
+                    _Param("Band 8 On A", value=0.0, p_min=0.0, p_max=1.0, is_quantized=True, unit="mode"),
                 ],
             )
 
@@ -221,6 +224,7 @@ class TestChainTools(unittest.TestCase):
 
         step_result = result["steps_executed"][0]
         self.assertEqual(step_result["parameters_applied"][0]["param_name"], "1 Gain A")
+        self.assertEqual(step_result["parameters_applied"][0]["resolution"]["matched_by"], "alias")
         self.assertNotIn("Low Shelf Gain", step_result["unmatched_parameters"])
 
     def test_build_device_chain_applies_eq8_band_type_alias(self):
@@ -241,7 +245,35 @@ class TestChainTools(unittest.TestCase):
 
         step_result = result["steps_executed"][0]
         self.assertEqual(step_result["parameters_applied"][0]["param_name"], "1 Filter Type A")
+        self.assertEqual(step_result["parameters_applied"][0]["resolution"]["matched_by"], "rule")
         self.assertNotIn("1 Type", step_result["unmatched_parameters"])
+
+    def test_build_device_chain_applies_eq8_band_gain_and_frequency_aliases(self):
+        tools, song = self._build_tools()
+        result = tools.build_device_chain(
+            steps=[
+                {
+                    "device_name": "EQ Eight",
+                    "parameter_updates": [
+                        {"param_name": "Band 8 Gain", "value": 0.2},
+                        {"param_name": "Band 8 Frequency", "value": 0.75},
+                    ],
+                }
+            ]
+        )
+        self.assertTrue(result["ok"])
+        freq_param = song.tracks[0].devices[0].parameters[3]
+        gain_param = song.tracks[0].devices[0].parameters[4]
+        self.assertAlmostEqual(gain_param.value, 0.2)
+        self.assertAlmostEqual(freq_param.value, 0.75)
+
+        step_result = result["steps_executed"][0]
+        self.assertEqual(step_result["parameters_applied"][0]["resolution"]["matched_by"], "rule")
+        self.assertEqual(step_result["parameters_applied"][1]["resolution"]["matched_by"], "rule")
+        self.assertNotIn("Band 8 Gain", step_result["unmatched_parameters"])
+        self.assertNotIn("Band 8 Frequency", step_result["unmatched_parameters"])
+        band_active = song.tracks[0].devices[0].parameters[5]
+        self.assertEqual(int(round(band_active.value)), 1)
 
     def test_build_device_chain_applies_display_text_update(self):
         tools, song = self._build_tools()
@@ -293,6 +325,33 @@ class TestChainTools(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertTrue(result["steps_executed"][0]["unmatched_parameters"])
+        self.assertEqual(result["steps_executed"][0]["unmatched_parameter_details"][0]["reason"], "no_match")
+
+    def test_display_verify_handles_live_style_str_for_value(self):
+        tools, _ = self._build_tools()
+
+        class _LiveStyleHzParam(_Param):
+            def str_for_value(self, _):
+                hz = 20.0 * ((20000.0 / 20.0) ** float(self.value))
+                return f"{hz:.1f} Hz"
+
+        param = _LiveStyleHzParam("Frequency", value=0.5, p_min=0.0, p_max=1.0, unit="hz")
+        result = tools._set_parameter_with_verify(
+            param,
+            target_display_value=8000.0,
+            target_unit="hz",
+            fallback_value=None,
+        )
+        self.assertTrue(result["ok"])
+        parsed = tools._parse_display_number(result["display"])
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertGreater(parsed, 6000.0)
+
+    def test_convert_display_number_for_unit_khz_to_hz(self):
+        tools, _ = self._build_tools()
+        converted = tools._convert_display_number_for_unit(8.0, "8.00 kHz", "hz")
+        self.assertEqual(converted, 8000.0)
 
     def test_build_device_chain_fails_for_unknown_device(self):
         tools, song = self._build_tools()
